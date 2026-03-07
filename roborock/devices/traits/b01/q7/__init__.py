@@ -23,10 +23,12 @@ from roborock.roborock_message import RoborockB01Props
 from roborock.roborock_typing import RoborockB01Q7Methods
 
 from .clean_summary import CleanSummaryTrait
+from .map_content import Q7MapContentTrait
 
 __all__ = [
     "Q7PropertiesApi",
     "CleanSummaryTrait",
+    "Q7MapContentTrait",
 ]
 
 _Q7_DPS = 10000
@@ -38,12 +40,29 @@ class Q7PropertiesApi(Trait):
     clean_summary: CleanSummaryTrait
     """Trait for clean records / clean summary (Q7 `service.get_record_list`)."""
 
-    def __init__(self, channel: MqttChannel) -> None:
+    map_content: Q7MapContentTrait | None
+
+    def __init__(
+        self,
+        channel: MqttChannel,
+        *,
+        local_key: str | None = None,
+        serial: str | None = None,
+        model: str | None = None,
+    ) -> None:
         """Initialize the B01Props API."""
         self._channel = channel
         self.clean_summary = CleanSummaryTrait(channel)
+
         # Map uploads are serialized per-device to avoid response cross-wiring.
         self._map_command_lock = asyncio.Lock()
+
+        # Keep backwards compatibility for direct callers that only use
+        # command/query traits and do not pass map context.
+        if local_key and serial and model:
+            self.map_content = Q7MapContentTrait(channel, local_key=local_key, serial=serial, model=model)
+        else:
+            self.map_content = None
 
     async def query_values(self, props: list[RoborockB01Props]) -> B01Props | None:
         """Query the device for the values of the given Q7 properties."""
@@ -198,6 +217,12 @@ class Q7PropertiesApi(Trait):
         )
 
 
-def create(channel: MqttChannel) -> Q7PropertiesApi:
-    """Create traits for B01 devices."""
-    return Q7PropertiesApi(channel)
+def create(
+    channel: MqttChannel,
+    *,
+    local_key: str | None = None,
+    serial: str | None = None,
+    model: str | None = None,
+) -> Q7PropertiesApi:
+    """Create traits for B01 Q7 devices."""
+    return Q7PropertiesApi(channel, local_key=local_key, serial=serial, model=model)
