@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import zlib
 from pathlib import Path
 
@@ -11,14 +12,14 @@ from Crypto.Util.Padding import pad
 
 from roborock.protocols.b01_map_protocol import decode_b01_map_payload, derive_map_key
 
-FIXTURE = Path(__file__).resolve().parents[1] / "map" / "testdata" / "raw-mqtt-map301.bin.inflated.bin"
+FIXTURE = Path(__file__).resolve().parents[1] / "map" / "testdata" / "raw-mqtt-map301.bin.inflated.bin.gz"
 
 
 def test_decode_b01_map_payload_round_trip() -> None:
     local_key = "abcdefghijklmnop"
     serial = "testsn012345"
     model = "roborock.vacuum.sc05"
-    inflated = FIXTURE.read_bytes()
+    inflated = gzip.decompress(FIXTURE.read_bytes())
 
     compressed = zlib.compress(inflated)
     map_key = derive_map_key(serial, model)
