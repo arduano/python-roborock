@@ -1,67 +1,23 @@
-import base64
 import gzip
-import hashlib
 import io
-import struct
 import zlib
 from pathlib import Path
 
 import pytest
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
 from PIL import Image
 
 from roborock.exceptions import RoborockException
 from roborock.map.b01_map_parser import B01MapParser, _parse_scmap_payload
+from roborock.map.proto.b01_scmap_pb2 import RobotMap  # type: ignore[attr-defined]
 
 FIXTURE = Path(__file__).resolve().parent / "testdata" / "raw-mqtt-map301.bin.inflated.bin.gz"
 
 
-def _derive_map_key(serial: str, model: str) -> bytes:
-    model_suffix = model.split(".")[-1]
-    model_key = (model_suffix + "0" * 16)[:16].encode()
-    material = f"{serial}+{model_suffix}+{serial}".encode()
-    encrypted = AES.new(model_key, AES.MODE_ECB).encrypt(pad(material, AES.block_size))
-    md5 = hashlib.md5(base64.b64encode(encrypted), usedforsecurity=False).hexdigest()
-    return md5[8:24].encode()
-
-
-def _encode_varint(value: int) -> bytes:
-    encoded = bytearray()
-    while True:
-        to_write = value & 0x7F
-        value >>= 7
-        if value:
-            encoded.append(to_write | 0x80)
-        else:
-            encoded.append(to_write)
-            return bytes(encoded)
-
-
-def _field_varint(field_no: int, value: int) -> bytes:
-    return _encode_varint((field_no << 3) | 0) + _encode_varint(value)
-
-
-def _field_len(field_no: int, value: bytes) -> bytes:
-    return _encode_varint((field_no << 3) | 2) + _encode_varint(len(value)) + value
-
-
-def _field_float32(field_no: int, value: float) -> bytes:
-    return _encode_varint((field_no << 3) | 5) + struct.pack("<f", value)
-
-
 def test_b01_map_parser_decodes_and_renders_fixture() -> None:
-    serial = "testsn012345"
-    model = "roborock.vacuum.sc05"
     inflated = gzip.decompress(FIXTURE.read_bytes())
 
-    compressed = zlib.compress(inflated)
-    map_key = _derive_map_key(serial, model)
-    encrypted = AES.new(map_key, AES.MODE_ECB).encrypt(pad(compressed.hex().encode(), AES.block_size))
-    payload = base64.b64encode(encrypted)
-
     parser = B01MapParser()
-    parsed = parser.parse(payload, serial=serial, model=model)
+    parsed = parser.parse(inflated)
 
     assert parsed.image_content is not None
     assert parsed.image_content.startswith(b"\x89PNG\r\n\x1a\n")
@@ -87,62 +43,41 @@ def test_b01_map_parser_decodes_and_renders_fixture() -> None:
 
 
 def test_b01_scmap_parser_maps_observed_schema_fields() -> None:
-    room_name_post = _field_float32(1, 11.25) + _field_float32(2, 22.5)
-    room_one = b"".join(
-        [
-            _field_varint(1, 42),
-            _field_len(2, b"Kitchen"),
-            _field_varint(5, 1),
-            _field_len(8, room_name_post),
-            _field_varint(10, 7),
-            _field_varint(12, 9),
-        ]
-    )
-    room_two = b"".join([_field_varint(1, 99), _field_varint(5, 0)])
+    payload = RobotMap()
+    payload.mapType = 1
+    payload.mapExtInfo.taskBeginDate = 100
+    payload.mapExtInfo.mapUploadDate = 200
+    payload.mapExtInfo.mapValid = 1
+    payload.mapExtInfo.mapVersion = 3
+    payload.mapExtInfo.boudaryInfo.mapMd5 = "md5"
+    payload.mapExtInfo.boudaryInfo.vMinX = 10
+    payload.mapExtInfo.boudaryInfo.vMaxX = 20
+    payload.mapExtInfo.boudaryInfo.vMinY = 30
+    payload.mapExtInfo.boudaryInfo.vMaxY = 40
+    payload.mapHead.mapHeadId = 7
+    payload.mapHead.sizeX = 2
+    payload.mapHead.sizeY = 2
+    payload.mapHead.minX = 1.5
+    payload.mapHead.minY = 2.5
+    payload.mapHead.maxX = 3.5
+    payload.mapHead.maxY = 4.5
+    payload.mapHead.resolution = 0.05
+    payload.mapData.mapData = zlib.compress(bytes([0, 127, 128, 128]))
 
-    boundary_info = b"".join(
-        [
-            _field_len(1, b"md5"),
-            _field_varint(2, 10),
-            _field_varint(3, 20),
-            _field_varint(4, 30),
-            _field_varint(5, 40),
-        ]
-    )
-    map_ext_info = b"".join(
-        [
-            _field_varint(1, 100),
-            _field_varint(2, 200),
-            _field_varint(3, 1),
-            _field_varint(8, 3),
-            _field_len(7, boundary_info),
-        ]
-    )
-    map_head = b"".join(
-        [
-            _field_varint(1, 7),
-            _field_varint(2, 2),
-            _field_varint(3, 2),
-            _field_float32(4, 1.5),
-            _field_float32(5, 2.5),
-            _field_float32(6, 3.5),
-            _field_float32(7, 4.5),
-            _field_float32(8, 0.05),
-        ]
-    )
-    map_data = _field_len(1, zlib.compress(bytes([0, 127, 128, 128])))
-    payload = b"".join(
-        [
-            _field_varint(1, 1),
-            _field_len(2, map_ext_info),
-            _field_len(3, map_head),
-            _field_len(4, map_data),
-            _field_len(12, room_one),
-            _field_len(12, room_two),
-        ]
-    )
+    room_one = payload.roomDataInfo.add()
+    room_one.roomId = 42
+    room_one.roomName = "Kitchen"
+    room_one.cleanState = 1
+    room_one.roomNamePost.x = 11.25
+    room_one.roomNamePost.y = 22.5
+    room_one.colorId = 7
+    room_one.global_seq = 9
 
-    parsed = _parse_scmap_payload(payload)
+    room_two = payload.roomDataInfo.add()
+    room_two.roomId = 99
+    room_two.cleanState = 0
+
+    parsed = _parse_scmap_payload(payload.SerializeToString())
 
     assert parsed.mapType == 1
     assert parsed.HasField("mapExtInfo")
@@ -171,5 +106,5 @@ def test_b01_scmap_parser_maps_observed_schema_fields() -> None:
 
 def test_b01_map_parser_rejects_invalid_payload() -> None:
     parser = B01MapParser()
-    with pytest.raises(RoborockException, match="Failed to decode B01 map payload"):
-        parser.parse(b"not a map", serial="testsn012345", model="roborock.vacuum.sc05")
+    with pytest.raises(RoborockException, match="Failed to parse B01 map header/grid"):
+        parser.parse(b"")

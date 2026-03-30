@@ -16,6 +16,7 @@ from roborock.data import RoborockBase
 from roborock.devices.traits import Trait
 from roborock.exceptions import RoborockException
 from roborock.map.b01_map_parser import B01MapParser, B01MapParserConfig
+from roborock.protocols.b01_q7_protocol import decode_map_response_payload
 
 from .map import MapTrait
 
@@ -77,12 +78,13 @@ class MapContentTrait(MapContent, Trait):
         This mirrors the v1 trait behavior so cached map payload bytes can be
         reparsed without going back to the device.
         """
+        scmap_payload = decode_map_response_payload(
+            response,
+            serial=self._serial,
+            model=self._model,
+        )
         try:
-            parsed_data = self._map_parser.parse(
-                response,
-                serial=self._serial,
-                model=self._model,
-            )
+            parsed_data = self._map_parser.parse(scmap_payload)
         except RoborockException:
             raise
         except Exception as ex:

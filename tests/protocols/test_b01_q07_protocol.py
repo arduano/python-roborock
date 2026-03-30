@@ -1,16 +1,25 @@
 """Tests for the B01 protocol message encoding and decoding."""
 
+import base64
 import json
 import pathlib
+import zlib
 from collections.abc import Generator
 
 import pytest
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
+from Crypto.Util.Padding import pad, unpad
 from freezegun import freeze_time
 from syrupy import SnapshotAssertion
 
-from roborock.protocols.b01_q7_protocol import Q7RequestMessage, decode_rpc_response, encode_mqtt_payload
+from roborock.exceptions import RoborockException
+from roborock.protocol import Utils
+from roborock.protocols.b01_q7_protocol import (
+    Q7RequestMessage,
+    decode_map_response_payload,
+    decode_rpc_response,
+    encode_mqtt_payload,
+)
 from roborock.roborock_message import RoborockMessage, RoborockMessageProtocol
 
 TESTDATA_PATH = pathlib.Path("tests/protocols/testdata/b01_q7_protocol")
@@ -69,3 +78,32 @@ def test_encode_mqtt_payload(dps: int, command: str, params: dict[str, list[str]
     assert decoded_json["dps"][str(dps)]["method"] == command
     assert decoded_json["dps"][str(dps)]["msgId"] == str(msg_id)
     assert decoded_json["dps"][str(dps)]["params"] == params
+
+
+def _encode_map_response_payload(payload: bytes, *, serial: str, model: str) -> bytes:
+    map_key = Utils.derive_b01_map_key(serial, model)
+    encrypted = AES.new(map_key, AES.MODE_ECB).encrypt(pad(payload.hex().encode(), AES.block_size))
+    return base64.b64encode(encrypted)
+
+
+def test_decode_map_response_payload_decompresses_by_default() -> None:
+    serial = "testsn012345"
+    model = "roborock.vacuum.sc05"
+    scmap_payload = b"raw-scmap-payload"
+    raw_payload = _encode_map_response_payload(zlib.compress(scmap_payload), serial=serial, model=model)
+
+    assert decode_map_response_payload(raw_payload, serial=serial, model=model) == scmap_payload
+
+
+def test_decode_map_response_payload_supports_explicit_uncompressed_payloads() -> None:
+    serial = "testsn012345"
+    model = "roborock.vacuum.sc05"
+    scmap_payload = b"raw-scmap-payload"
+    raw_payload = _encode_map_response_payload(scmap_payload, serial=serial, model=model)
+
+    assert decode_map_response_payload(raw_payload, serial=serial, model=model, compressed=False) == scmap_payload
+
+
+def test_decode_map_response_payload_rejects_invalid_base64() -> None:
+    with pytest.raises(RoborockException, match="Failed to decode B01 map payload"):
+        decode_map_response_payload(b"not valid base64!", serial="testsn012345", model="roborock.vacuum.sc05")

@@ -30,6 +30,9 @@ async def test_q7_map_content_refresh_populates_cached_values(
 
     dummy_map_data = MapData()
     with patch(
+        "roborock.devices.traits.b01.q7.map_content.decode_map_response_payload",
+        return_value=b"decoded-scmap",
+    ) as decode, patch(
         "roborock.devices.traits.b01.q7.map_content.B01MapParser.parse",
         return_value=type("X", (), {"image_content": b"pngbytes", "map_data": dummy_map_data})(),
     ) as parse:
@@ -39,18 +42,26 @@ async def test_q7_map_content_refresh_populates_cached_values(
     assert q7_api.map_content.map_data is dummy_map_data
     assert q7_api.map_content.raw_api_response == b"raw-map-payload"
 
-    parse.assert_called_once()
+    decode.assert_called_once_with(
+        b"raw-map-payload",
+        serial="testsn012345",
+        model="roborock.vacuum.sc05",
+    )
+    parse.assert_called_once_with(b"decoded-scmap")
 
 
 def test_q7_map_content_parse_errors_cleanly(q7_api: Q7PropertiesApi):
-    with patch("roborock.devices.traits.b01.q7.map_content.B01MapParser.parse", side_effect=ValueError("boom")):
+    with patch(
+        "roborock.devices.traits.b01.q7.map_content.decode_map_response_payload",
+        return_value=b"decoded-scmap",
+    ), patch("roborock.devices.traits.b01.q7.map_content.B01MapParser.parse", side_effect=ValueError("boom")):
         with pytest.raises(RoborockException, match="Failed to parse B01 map data"):
             q7_api.map_content.parse_map_content(b"raw")
 
 
 def test_q7_map_content_preserves_specific_roborock_errors(q7_api: Q7PropertiesApi):
     with patch(
-        "roborock.devices.traits.b01.q7.map_content.B01MapParser.parse",
+        "roborock.devices.traits.b01.q7.map_content.decode_map_response_payload",
         side_effect=RoborockException("Specific decoder failure"),
     ):
         with pytest.raises(RoborockException, match="Specific decoder failure"):

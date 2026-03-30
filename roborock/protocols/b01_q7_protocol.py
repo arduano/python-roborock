@@ -1,7 +1,6 @@
 """Roborock B01 Protocol encoding and decoding."""
 
 import json
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,13 +9,9 @@ from Crypto.Util.Padding import pad, unpad
 
 from roborock import RoborockB01Q7Methods
 from roborock.exceptions import RoborockException
-from roborock.roborock_message import (
-    RoborockMessage,
-    RoborockMessageProtocol,
-)
+from roborock.protocol import Utils
+from roborock.roborock_message import RoborockMessage, RoborockMessageProtocol
 from roborock.util import get_next_int
-
-_LOGGER = logging.getLogger(__name__)
 
 B01_VERSION = b"B01"
 B01_Q7_DPS = 10000
@@ -80,3 +75,17 @@ def decode_rpc_response(message: RoborockMessage) -> dict[int, Any]:
         return {int(key): value for key, value in datapoints.items()}
     except ValueError:
         raise RoborockException(f"Invalid B01 message format: 'dps' key should be an integer for {message.payload!r}")
+
+
+def decode_map_response_payload(raw_payload: bytes, *, serial: str, model: str, compressed: bool = True) -> bytes:
+    """Decode a raw B01/Q7 ``MAP_RESPONSE`` payload into SCMap bytes.
+
+    Transport decoding lives here rather than in the map parser so the parser
+    only deals with protobuf/map semantics.
+    """
+    return Utils.decode_b01_aes_hex_payload(
+        raw_payload,
+        Utils.derive_b01_map_key(serial, model),
+        compressed=compressed,
+        context="B01 map payload",
+    )

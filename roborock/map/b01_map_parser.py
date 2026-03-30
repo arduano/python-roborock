@@ -1,25 +1,11 @@
-"""Module for parsing B01/Q7 map content.
+"""Module for parsing B01/Q7 SCMap content."""
 
-Observed Q7 `MAP_RESPONSE` payloads follow this decode pipeline:
-- base64-encoded ASCII
-- AES-ECB encrypted with the derived map key
-- PKCS7 padded
-- ASCII hex for a zlib-compressed SCMap payload
-
-The inner SCMap blob is parsed with protobuf messages generated from
-`roborock/map/proto/b01_scmap.proto`.
-"""
-
-import base64
-import binascii
-import hashlib
 import io
+import logging
 import zlib
 from dataclasses import dataclass
 
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
-from google.protobuf.message import DecodeError, Message
+from google.protobuf.message import DecodeError
 from PIL import Image
 from vacuum_map_parser_base.config.image_config import ImageConfig
 from vacuum_map_parser_base.map_data import ImageData, MapData
@@ -29,7 +15,7 @@ from roborock.map.proto.b01_scmap_pb2 import RobotMap  # type: ignore[attr-defin
 
 from .map_parser import ParsedMapData
 
-_B64_CHARS = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+_LOGGER = logging.getLogger(__name__)
 _MAP_FILE_FORMAT = "PNG"
 
 
@@ -42,15 +28,14 @@ class B01MapParserConfig:
 
 
 class B01MapParser:
-    """Decoder/parser for B01/Q7 SCMap payloads."""
+    """Parser for already-decoded B01/Q7 SCMap payloads."""
 
     def __init__(self, config: B01MapParserConfig | None = None) -> None:
         self._config = config or B01MapParserConfig()
 
-    def parse(self, raw_payload: bytes, *, serial: str, model: str) -> ParsedMapData:
-        """Parse a raw MAP_RESPONSE payload and return a PNG + MapData."""
-        inflated = _decode_b01_map_payload(raw_payload, serial=serial, model=model)
-        parsed = _parse_scmap_payload(inflated)
+    def parse(self, scmap_payload: bytes) -> ParsedMapData:
+        """Parse SCMap bytes and return a PNG + MapData."""
+        parsed = _parse_scmap_payload(scmap_payload)
         size_x, size_y, grid = _extract_grid(parsed)
         room_names = _extract_room_names(parsed)
 
@@ -73,69 +58,27 @@ class B01MapParser:
         image_bytes = io.BytesIO()
         image.save(image_bytes, format=_MAP_FILE_FORMAT)
 
-        return ParsedMapData(
-            image_content=image_bytes.getvalue(),
-            map_data=map_data,
-        )
-
-
-def _derive_map_key(serial: str, model: str) -> bytes:
-    """Derive the B01/Q7 map decrypt key from serial + model."""
-    model_suffix = model.split(".")[-1]
-    model_key = (model_suffix + "0" * 16)[:16].encode()
-    material = f"{serial}+{model_suffix}+{serial}".encode()
-    encrypted = AES.new(model_key, AES.MODE_ECB).encrypt(pad(material, AES.block_size))
-    md5 = hashlib.md5(base64.b64encode(encrypted), usedforsecurity=False).hexdigest()
-    return md5[8:24].encode()
-
-
-def _decode_base64_payload(raw_payload: bytes) -> bytes:
-    blob = raw_payload.strip()
-    if len(blob) < 32 or any(b not in _B64_CHARS for b in blob):
-        raise RoborockException("Failed to decode B01 map payload")
-
-    padded = blob + b"=" * (-len(blob) % 4)
-    try:
-        return base64.b64decode(padded, validate=True)
-    except binascii.Error as err:
-        raise RoborockException("Failed to decode B01 map payload") from err
-
-
-def _decode_b01_map_payload(raw_payload: bytes, *, serial: str, model: str) -> bytes:
-    """Decode raw B01 `MAP_RESPONSE` payload into inflated SCMap bytes."""
-    encrypted_payload = _decode_base64_payload(raw_payload)
-    if len(encrypted_payload) % AES.block_size != 0:
-        raise RoborockException("Unexpected encrypted B01 map payload length")
-
-    map_key = _derive_map_key(serial, model)
-    decrypted_hex = AES.new(map_key, AES.MODE_ECB).decrypt(encrypted_payload)
-
-    try:
-        compressed_hex = unpad(decrypted_hex, AES.block_size).decode("ascii")
-        compressed_payload = bytes.fromhex(compressed_hex)
-        return zlib.decompress(compressed_payload)
-    except (ValueError, UnicodeDecodeError, zlib.error) as err:
-        raise RoborockException("Failed to decode B01 map payload") from err
-
-
-def _parse_proto(blob: bytes, message: Message, *, context: str) -> None:
-    try:
-        message.ParseFromString(blob)
-    except DecodeError as err:
-        raise RoborockException(f"Failed to parse {context}") from err
+        return ParsedMapData(image_content=image_bytes.getvalue(), map_data=map_data)
 
 
 def _decode_map_data_bytes(value: bytes) -> bytes:
+    # Observed protobuf payloads usually store zlib-compressed map bytes here,
+    # but tests/fixtures may already contain the inflated grid. Prefer the
+    # compressed form and fall back to raw bytes explicitly.
     try:
         return zlib.decompress(value)
     except zlib.error:
+        _LOGGER.debug("B01 SCMap grid payload is already uncompressed; using raw bytes")
         return value
 
 
 def _parse_scmap_payload(payload: bytes) -> RobotMap:
     """Parse inflated SCMap bytes into a generated protobuf message."""
     parsed = RobotMap()
-    _parse_proto(payload, parsed, context="B01 SCMap")
+    try:
+        parsed.ParseFromString(payload)
+    except DecodeError as err:
+        raise RoborockException("Failed to parse B01 SCMap") from err
     return parsed
 
 

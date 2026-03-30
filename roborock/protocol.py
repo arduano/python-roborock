@@ -1,7 +1,9 @@
+import base64
 import binascii
 import gzip
 import hashlib
 import logging
+import zlib
 from collections.abc import Callable
 from urllib.parse import urlparse
 
@@ -236,6 +238,59 @@ class Utils:
     def decompress(compressed_data: bytes):
         """Decompress data using gzip."""
         return gzip.decompress(compressed_data)
+
+    @staticmethod
+    def decode_base64(payload: bytes) -> bytes:
+        """Decode a base64 payload after trimming surrounding whitespace."""
+        if not isinstance(payload, bytes):
+            raise TypeError("payload requires bytes")
+
+        blob = payload.strip()
+        padded = blob + b"=" * (-len(blob) % 4)
+        try:
+            return base64.b64decode(padded, validate=True)
+        except binascii.Error as err:
+            raise RoborockException("Failed to decode base64 payload") from err
+
+    @staticmethod
+    def derive_b01_map_key(serial: str, model: str) -> bytes:
+        """Derive the B01/Q7 map decrypt key from serial + model."""
+        model_suffix = model.split(".")[-1]
+        model_key = (model_suffix + "0" * 16)[:16].encode()
+        material = f"{serial}+{model_suffix}+{serial}".encode()
+        encrypted = AES.new(model_key, AES.MODE_ECB).encrypt(pad(material, AES.block_size))
+        md5 = hashlib.md5(base64.b64encode(encrypted), usedforsecurity=False).hexdigest()
+        return md5[8:24].encode()
+
+    @staticmethod
+    def decode_b01_aes_hex_payload(raw_payload: bytes, aes_key: bytes, *, compressed: bool, context: str) -> bytes:
+        """Decode a base64 + AES-ECB + PKCS7 + ASCII-hex B01 payload.
+
+        The final decoded bytes are optionally zlib-inflated based on the
+        explicit ``compressed`` flag so call sites clearly state which variant
+        they expect.
+        """
+        try:
+            encrypted_payload = Utils.decode_base64(raw_payload)
+        except RoborockException as err:
+            raise RoborockException(f"Failed to decode {context}") from err
+
+        if len(encrypted_payload) % AES.block_size != 0:
+            raise RoborockException(f"Unexpected encrypted {context} length")
+
+        decrypted_payload = AES.new(aes_key, AES.MODE_ECB).decrypt(encrypted_payload)
+        try:
+            decoded_payload = bytes.fromhex(unpad(decrypted_payload, AES.block_size).decode("ascii"))
+        except (ValueError, UnicodeDecodeError) as err:
+            raise RoborockException(f"Failed to decode {context}") from err
+
+        if not compressed:
+            return decoded_payload
+
+        try:
+            return zlib.decompress(decoded_payload)
+        except zlib.error as err:
+            raise RoborockException(f"Failed to decompress {context}") from err
 
 
 class EncryptionAdapter(Construct):
