@@ -29,7 +29,6 @@ from roborock.map.proto.b01_scmap_pb2 import RobotMap  # type: ignore[attr-defin
 
 from .map_parser import ParsedMapData
 
-_B64_CHARS = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
 _MAP_FILE_FORMAT = "PNG"
 
 
@@ -91,9 +90,6 @@ def _derive_map_key(serial: str, model: str) -> bytes:
 
 def _decode_base64_payload(raw_payload: bytes) -> bytes:
     blob = raw_payload.strip()
-    if len(blob) < 32 or any(b not in _B64_CHARS for b in blob):
-        raise RoborockException("Failed to decode B01 map payload")
-
     padded = blob + b"=" * (-len(blob) % 4)
     try:
         return base64.b64decode(padded, validate=True)
