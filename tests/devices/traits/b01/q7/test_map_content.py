@@ -1,8 +1,14 @@
+import base64
+import gzip
+import hashlib
+import zlib
+from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
 import pytest
-from vacuum_map_parser_base.map_data import MapData
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
 
 from roborock.devices.traits.b01.q7 import Q7PropertiesApi
 from roborock.devices.transport.mqtt_channel import MqttChannel
@@ -12,34 +18,59 @@ from tests.fixtures.channel_fixtures import FakeChannel
 
 from . import B01MessageBuilder
 
+FIXTURE = Path(__file__).resolve().parents[4] / "map" / "testdata" / "raw-mqtt-map301.bin.inflated.bin.gz"
+
+
+def _build_encrypted_map_payload(serial: str, model: str) -> bytes:
+    inflated = gzip.decompress(FIXTURE.read_bytes())
+    compressed = zlib.compress(inflated)
+
+    model_suffix = model.split(".")[-1]
+    model_key = (model_suffix + "0" * 16)[:16].encode()
+    material = f"{serial}+{model_suffix}+{serial}".encode()
+    encrypted = AES.new(model_key, AES.MODE_ECB).encrypt(pad(material, AES.block_size))
+    md5 = hashlib.md5(base64.b64encode(encrypted), usedforsecurity=False).hexdigest()
+    map_key = md5[8:24].encode()
+
+    encoded = AES.new(map_key, AES.MODE_ECB).encrypt(pad(compressed.hex().encode(), AES.block_size))
+    return base64.b64encode(encoded)
+
 
 async def test_q7_map_content_refresh_populates_cached_values(
     q7_api: Q7PropertiesApi,
     fake_channel: FakeChannel,
     message_builder: B01MessageBuilder,
 ):
+    payload = _build_encrypted_map_payload(serial="testsn012345", model="roborock.vacuum.sc05")
+
     fake_channel.response_queue.append(message_builder.build({"map_list": [{"id": 1772093512, "cur": True}]}))
     fake_channel.response_queue.append(
         RoborockMessage(
             protocol=RoborockMessageProtocol.MAP_RESPONSE,
-            payload=b"raw-map-payload",
+            payload=payload,
             version=b"B01",
             seq=message_builder.seq + 1,
         )
     )
 
-    dummy_map_data = MapData()
-    with patch(
-        "roborock.devices.traits.b01.q7.map_content.B01MapParser.parse",
-        return_value=type("X", (), {"image_content": b"pngbytes", "map_data": dummy_map_data})(),
-    ) as parse:
-        await q7_api.map_content.refresh()
+    await q7_api.map_content.refresh()
 
-    assert q7_api.map_content.image_content == b"pngbytes"
-    assert q7_api.map_content.map_data is dummy_map_data
-    assert q7_api.map_content.raw_api_response == b"raw-map-payload"
-
-    parse.assert_called_once()
+    assert q7_api.map_content.raw_api_response == payload
+    assert q7_api.map_content.image_content is not None
+    assert q7_api.map_content.image_content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert q7_api.map_content.map_data is not None
+    assert q7_api.map_content.map_data.additional_parameters["room_names"] == {
+        10: "room1",
+        11: "room2",
+        12: "room3",
+        13: "room4",
+        14: "room5",
+        15: "room6",
+        16: "room7",
+        17: "room8",
+        18: "room9",
+        19: "room10",
+    }
 
 
 def test_q7_map_content_parse_errors_cleanly(q7_api: Q7PropertiesApi):
