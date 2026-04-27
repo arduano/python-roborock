@@ -11,9 +11,9 @@ For B01/Q7 devices, the underlying raw map payload is retrieved via `MapTrait`.
 import asyncio
 from dataclasses import dataclass
 
-from vacuum_map_parser_base.map_data import MapData
+from vacuum_map_parser_base.map_data import MapData, Point
 
-from roborock.data import RoborockBase
+from roborock.data import CombinedMapInfo, NamedRoomMapping, RoborockBase
 from roborock.devices.rpc.b01_q7_channel import MapRpcChannel
 from roborock.devices.traits import Trait
 from roborock.exceptions import RoborockException
@@ -24,6 +24,7 @@ from roborock.roborock_typing import RoborockB01Q7Methods
 from .map import MapTrait
 
 _TRUNCATE_LENGTH = 20
+Q7_CURRENT_MAP_NAME = "Current map"
 
 
 @dataclass
@@ -49,6 +50,56 @@ class MapContent(RoborockBase):
             img = img[: _TRUNCATE_LENGTH - 3] + b"..."
         return f"MapContent(image_content={img!r}, map_data={self.map_data!r})"
 
+    @property
+    def map_flag(self) -> int | None:
+        """Return the current map flag if map data is available."""
+        if self.map_data is None:
+            return None
+        return int(getattr(self.map_data, "map_flag", 0))
+
+    @property
+    def room_names(self) -> dict[int, str]:
+        """Return current-map room names indexed by room id."""
+        additional_parameters = getattr(self.map_data, "additional_parameters", None)
+        if not isinstance(additional_parameters, dict):
+            return {}
+
+        room_names = additional_parameters.get("room_names")
+        if not isinstance(room_names, dict):
+            return {}
+
+        return {
+            int(room_id): str(room_name)
+            for room_id, room_name in sorted(room_names.items(), key=lambda item: int(item[0]))
+        }
+
+    @property
+    def rooms(self) -> list[NamedRoomMapping]:
+        """Return current-map rooms as named room mappings."""
+        return [
+            NamedRoomMapping(segment_id=room_id, iot_id=str(room_id), raw_name=room_name)
+            for room_id, room_name in self.room_names.items()
+        ]
+
+    @property
+    def current_map_name(self) -> str:
+        """Return the synthetic name used for the active Q7 map."""
+        return Q7_CURRENT_MAP_NAME
+
+    @property
+    def current_map_info(self) -> CombinedMapInfo | None:
+        """Return the active map info in the same high-level shape used by v1."""
+        if (map_flag := self.map_flag) is None:
+            return None
+        return CombinedMapInfo(map_flag=map_flag, name=self.current_map_name, rooms=self.rooms)
+
+    @property
+    def vacuum_position(self) -> Point | None:
+        """Return the current vacuum position from cached map data."""
+        if self.map_data is None:
+            return None
+        return self.map_data.vacuum_position
+
 
 class MapContentTrait(MapContent, Trait):
     """Trait for fetching parsed map content for Q7 devices."""
@@ -70,11 +121,13 @@ class MapContentTrait(MapContent, Trait):
     async def refresh(self) -> None:
         """Fetch, decode, and parse the current map payload.
 
-        This relies on the Map Trait already having fetched the map list metadata
-        so it can determine the current map_id.
+        This uses the Map Trait metadata to determine the current map_id and
+        will refresh that metadata first if needed.
         """
-        # Users must call first
         if (map_id := self._map_trait.current_map_id) is None:
+            await self._map_trait.refresh()
+            map_id = self._map_trait.current_map_id
+        if map_id is None:
             raise RoborockException("Unable to determine current map ID")
 
         request = Q7RequestMessage(

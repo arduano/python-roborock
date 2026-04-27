@@ -107,3 +107,28 @@ async def test_q7_map_content_refresh_errors_without_map_list(
 
     with pytest.raises(RoborockException, match="Unable to determine current map ID"):
         await q7_api.map_content.refresh()
+
+
+def test_q7_map_content_exposes_current_map_info_shape(q7_api: Q7PropertiesApi):
+    """Q7 map content exposes rooms/current-map info in a v1-like shape."""
+    dummy_map_data = MapData()
+    dummy_map_data.map_flag = 0
+    dummy_map_data.additional_parameters = {"room_names": {"10": "room1", 11: "room2"}}
+    dummy_position = object()
+    dummy_map_data.vacuum_position = dummy_position
+
+    q7_api.map_content.map_data = dummy_map_data
+
+    assert q7_api.map_content.map_flag == 0
+    assert q7_api.map_content.room_names == {10: "room1", 11: "room2"}
+    assert [room.segment_id for room in q7_api.map_content.rooms] == [10, 11]
+    assert [room.name for room in q7_api.map_content.rooms] == ["room1", "room2"]
+    assert q7_api.map_content.current_map_name == "Current map"
+    assert q7_api.map_content.vacuum_position is dummy_position
+
+    current_map_info = q7_api.map_content.current_map_info
+    assert current_map_info is not None
+    assert current_map_info.map_flag == 0
+    assert current_map_info.name == "Current map"
+    assert [room.segment_id for room in current_map_info.rooms] == [10, 11]
+    assert [room.name for room in current_map_info.rooms] == ["room1", "room2"]

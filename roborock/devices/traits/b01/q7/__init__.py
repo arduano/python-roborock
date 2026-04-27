@@ -12,9 +12,7 @@ from roborock.data import HomeDataDevice, HomeDataProduct, Q7MapList, Q7MapListE
 from roborock.data.b01_q7.b01_q7_code_mappings import (
     CleanPathPreferenceMapping,
     CleanRepeatMapping,
-    CleanTaskTypeMapping,
     CleanTypeMapping,
-    SCDeviceCleanParam,
     SCWindMapping,
     WaterLevelMapping,
 )
@@ -29,12 +27,14 @@ from roborock.roborock_typing import RoborockB01Q7Methods
 from .clean_summary import CleanSummaryTrait
 from .map import MapTrait
 from .map_content import MapContentTrait
+from .vacuum import VacuumTrait
 
 __all__ = [
     "Q7PropertiesApi",
     "CleanSummaryTrait",
     "MapTrait",
     "MapContentTrait",
+    "VacuumTrait",
     "Q7MapList",
     "Q7MapListEntry",
 ]
@@ -51,6 +51,9 @@ class Q7PropertiesApi(Trait):
 
     map_content: MapContentTrait
     """Trait for fetching parsed current map content."""
+
+    vacuum: VacuumTrait
+    """Trait for vacuum-related commands and compatibility shims."""
 
     def __init__(
         self, channel: MqttChannel, map_rpc_channel: MapRpcChannel, device: HomeDataDevice, product: HomeDataProduct
@@ -70,6 +73,7 @@ class Q7PropertiesApi(Trait):
             self._map_rpc_channel,
             self.map,
         )
+        self.vacuum = VacuumTrait(self)
 
     async def query_values(self, props: list[RoborockB01Props]) -> B01Props | None:
         """Query the device for the values of the given Q7 properties."""
@@ -90,81 +94,47 @@ class Q7PropertiesApi(Trait):
 
     async def set_fan_speed(self, fan_speed: SCWindMapping) -> None:
         """Set the fan speed (wind)."""
-        await self.set_prop(RoborockB01Props.WIND, fan_speed.code)
+        await self.vacuum.set_fan_speed(fan_speed)
 
     async def set_water_level(self, water_level: WaterLevelMapping) -> None:
         """Set the water level (water)."""
-        await self.set_prop(RoborockB01Props.WATER, water_level.code)
+        await self.vacuum.set_water_level(water_level)
 
     async def set_mode(self, mode: CleanTypeMapping) -> None:
         """Set the cleaning mode (vacuum, mop, or vacuum and mop)."""
-        await self.set_prop(RoborockB01Props.MODE, mode.code)
+        await self.vacuum.set_mode(mode)
 
     async def set_clean_path_preference(self, preference: CleanPathPreferenceMapping) -> None:
         """Set the cleaning path preference (route)."""
-        await self.set_prop(RoborockB01Props.CLEAN_PATH_PREFERENCE, preference.code)
+        await self.vacuum.set_clean_path_preference(preference)
 
     async def set_repeat_state(self, repeat: CleanRepeatMapping) -> None:
         """Set the cleaning repeat state (cycles)."""
-        await self.set_prop(RoborockB01Props.REPEAT_STATE, repeat.code)
+        await self.vacuum.set_repeat_state(repeat)
 
     async def start_clean(self) -> None:
         """Start cleaning."""
-        await self.send(
-            command=RoborockB01Q7Methods.SET_ROOM_CLEAN,
-            params={
-                "clean_type": CleanTaskTypeMapping.ALL.code,
-                "ctrl_value": SCDeviceCleanParam.START.code,
-                "room_ids": [],
-            },
-        )
+        await self.vacuum.start_clean()
 
-    async def clean_segments(self, segment_ids: list[int]) -> None:
+    async def clean_segments(self, segment_ids: list[int | str]) -> None:
         """Start segment cleaning for the given ids (Q7 uses room ids)."""
-        await self.send(
-            command=RoborockB01Q7Methods.SET_ROOM_CLEAN,
-            params={
-                "clean_type": CleanTaskTypeMapping.ROOM.code,
-                "ctrl_value": SCDeviceCleanParam.START.code,
-                "room_ids": segment_ids,
-            },
-        )
+        await self.vacuum.clean_segments(segment_ids)
 
     async def pause_clean(self) -> None:
         """Pause cleaning."""
-        await self.send(
-            command=RoborockB01Q7Methods.SET_ROOM_CLEAN,
-            params={
-                "clean_type": CleanTaskTypeMapping.ALL.code,
-                "ctrl_value": SCDeviceCleanParam.PAUSE.code,
-                "room_ids": [],
-            },
-        )
+        await self.vacuum.pause_clean()
 
     async def stop_clean(self) -> None:
         """Stop cleaning."""
-        await self.send(
-            command=RoborockB01Q7Methods.SET_ROOM_CLEAN,
-            params={
-                "clean_type": CleanTaskTypeMapping.ALL.code,
-                "ctrl_value": SCDeviceCleanParam.STOP.code,
-                "room_ids": [],
-            },
-        )
+        await self.vacuum.stop_clean()
 
     async def return_to_dock(self) -> None:
         """Return to dock."""
-        await self.send(
-            command=RoborockB01Q7Methods.START_RECHARGE,
-            params={},
-        )
+        await self.vacuum.return_to_dock()
 
     async def find_me(self) -> None:
         """Locate the robot."""
-        await self.send(
-            command=RoborockB01Q7Methods.FIND_DEVICE,
-            params={},
-        )
+        await self.vacuum.find_me()
 
     async def send(self, command: CommandType, params: ParamsType) -> Any:
         """Send a command to the device."""
